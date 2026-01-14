@@ -22,6 +22,7 @@ const SNAPSHOT_MAX_CHARS: usize = 16_000;
 const SNAPSHOT_HEAD_RATIO: f64 = 0.7;
 
 /// 浏览器快照尾部保留比例
+#[allow(dead_code)]
 const SNAPSHOT_TAIL_RATIO: f64 = 0.3;
 
 /// 压缩工具结果文本
