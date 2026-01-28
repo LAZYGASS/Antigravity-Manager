@@ -67,8 +67,10 @@ pub async fn auth_middleware(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    // Constant-time compare is unnecessary here, but keep strict equality and avoid leaking values.
-    let authorized = api_key.map(|k| k == security.api_key).unwrap_or(false);
+    // Constant-time compare to prevent timing attacks
+    let authorized = api_key
+        .map(|k| constant_time_eq(k, &security.api_key))
+        .unwrap_or(false);
 
     if authorized {
         Ok(next.run(request).await)
@@ -77,13 +79,37 @@ pub async fn auth_middleware(
     }
 }
 
+/// Constant time string comparison to prevent timing attacks
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.bytes()
+        .zip(b.bytes())
+        .fold(0, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
 #[cfg(test)]
 mod tests {
-    // 移除未使用的 use super::*;
+    use super::*;
 
     #[test]
-    fn test_auth_placeholder() {
-        // Placeholder test
-        assert!(true);
+    fn test_constant_time_eq() {
+        let key = "sk-test-123456";
+
+        // Correct key
+        assert!(constant_time_eq(key, "sk-test-123456"));
+
+        // Incorrect key (same length)
+        assert!(!constant_time_eq(key, "sk-test-123457"));
+
+        // Incorrect key (different length)
+        assert!(!constant_time_eq(key, "sk-test"));
+        assert!(!constant_time_eq(key, "sk-test-1234567"));
+
+        // Empty strings
+        assert!(constant_time_eq("", ""));
+        assert!(!constant_time_eq("", "a"));
     }
 }
