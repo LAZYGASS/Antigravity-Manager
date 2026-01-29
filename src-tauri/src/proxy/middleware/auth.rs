@@ -11,6 +11,20 @@ use tokio::sync::RwLock;
 
 use crate::proxy::{ProxyAuthMode, ProxySecurityConfig};
 
+/// Constant-time string comparison to prevent timing attacks
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    if a_bytes.len() != b_bytes.len() {
+        return false;
+    }
+    let mut result = 0;
+    for (x, y) in a_bytes.iter().zip(b_bytes.iter()) {
+        result |= x ^ y;
+    }
+    result == 0
+}
+
 /// API Key 认证中间件
 pub async fn auth_middleware(
     State(security): State<Arc<RwLock<ProxySecurityConfig>>>,
@@ -67,8 +81,10 @@ pub async fn auth_middleware(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    // Constant-time compare is unnecessary here, but keep strict equality and avoid leaking values.
-    let authorized = api_key.map(|k| k == security.api_key).unwrap_or(false);
+    // Use constant-time comparison to prevent timing attacks
+    let authorized = api_key
+        .map(|k| constant_time_eq(k, &security.api_key))
+        .unwrap_or(false);
 
     if authorized {
         Ok(next.run(request).await)
@@ -79,11 +95,16 @@ pub async fn auth_middleware(
 
 #[cfg(test)]
 mod tests {
-    // 移除未使用的 use super::*;
+    use super::*;
 
     #[test]
-    fn test_auth_placeholder() {
-        // Placeholder test
-        assert!(true);
+    fn test_constant_time_eq() {
+        assert!(constant_time_eq("secret", "secret"));
+        assert!(!constant_time_eq("secret", "secreT"));
+        assert!(!constant_time_eq("secret", "secre"));
+        assert!(!constant_time_eq("secret", "secret1"));
+        assert!(!constant_time_eq("", "secret"));
+        assert!(constant_time_eq("", ""));
+        assert!(constant_time_eq("super_long_secret_key_123456", "super_long_secret_key_123456"));
     }
 }
