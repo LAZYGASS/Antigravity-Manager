@@ -218,42 +218,10 @@ pub fn transform_openai_request(
                                             "fileData": { "fileUri": &image_url.url, "mimeType": "image/jpeg" }
                                         }));
                                     } else {
-                                        // [NEW] 处理本地文件路径 (file:// 或 Windows/Unix 路径)
-                                        let file_path = if image_url.url.starts_with("file://") {
-                                            // 移除 file:// 前缀
-                                            #[cfg(target_os = "windows")]
-                                            { image_url.url.trim_start_matches("file:///").replace('/', "\\") }
-                                            #[cfg(not(target_os = "windows"))]
-                                            { image_url.url.trim_start_matches("file://").to_string() }
-                                        } else {
-                                            image_url.url.clone()
-                                        };
-                                        
-                                        tracing::debug!("[OpenAI-Request] Reading local image: {}", file_path);
-                                        
-                                        // 读取文件并转换为 base64
-                                        if let Ok(file_bytes) = std::fs::read(&file_path) {
-                                            use base64::Engine as _;
-                                            let b64 = base64::engine::general_purpose::STANDARD.encode(&file_bytes);
-                                            
-                                            // 根据文件扩展名推断 MIME 类型
-                                            let mime_type = if file_path.to_lowercase().ends_with(".png") {
-                                                "image/png"
-                                            } else if file_path.to_lowercase().ends_with(".gif") {
-                                                "image/gif"
-                                            } else if file_path.to_lowercase().ends_with(".webp") {
-                                                "image/webp"
-                                            } else {
-                                                "image/jpeg"
-                                            };
-                                            
-                                            parts.push(json!({
-                                                "inlineData": { "mimeType": mime_type, "data": b64 }
-                                            }));
-                                            tracing::debug!("[OpenAI-Request] Successfully loaded image: {} ({} bytes)", file_path, file_bytes.len());
-                                        } else {
-                                            tracing::debug!("[OpenAI-Request] Failed to read local image: {}", file_path);
-                                        }
+                                        // [SECURITY FIX] Disable arbitrary local file reading
+                                        // The proxy should not read local files based on client input as it enables LFI/SSRF.
+                                        // Clients must send image data as base64 (data: URI) or use http/https URLs.
+                                        tracing::warn!("[Security] Blocked attempt to read local file: {}", image_url.url);
                                     }
                                 }
                                 OpenAIContentBlock::AudioUrl { audio_url: _ } => {
