@@ -9,9 +9,67 @@ use crate::proxy::server::AppState;
 use crate::proxy::monitor::ProxyRequestLog;
 use serde_json::Value;
 use futures::StreamExt;
+use regex::Regex;
+use once_cell::sync::Lazy;
 
 const MAX_REQUEST_LOG_SIZE: usize = 100 * 1024 * 1024; // 100MB
 const MAX_RESPONSE_LOG_SIZE: usize = 100 * 1024 * 1024; // 100MB for image responses
+
+// Sensitive keys to redact
+static SENSITIVE_KEYS: &[&str] = &[
+    "api_key",
+    "apikey",
+    "key",
+    "token",
+    "access_token",
+    "refresh_token",
+    "password",
+    "secret",
+    "authorization",
+    "auth",
+];
+
+// Regex for fallback string redaction
+static SENSITIVE_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)"(api_key|apikey|key|token|access_token|refresh_token|password|secret|authorization|auth)"\s*:\s*"((?:[^"\\]|\\.)*)""#).unwrap()
+});
+
+fn is_sensitive_key(key: &str) -> bool {
+    SENSITIVE_KEYS.iter().any(|k| key.eq_ignore_ascii_case(k))
+}
+
+fn redact_value(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                if is_sensitive_key(k) {
+                    *v = Value::String("[REDACTED]".to_string());
+                } else {
+                    redact_value(v);
+                }
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                redact_value(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redact_sensitive_data(input: &str) -> String {
+    // Try to parse as JSON first for safer redaction
+    if let Ok(mut json) = serde_json::from_str::<Value>(input) {
+        redact_value(&mut json);
+        if let Ok(s) = serde_json::to_string_pretty(&json) {
+            return s;
+        }
+    }
+
+    // Fallback to regex redaction
+    SENSITIVE_REGEX.replace_all(input, "\"$1\": \"[REDACTED]\"").to_string()
+}
 
 pub async fn monitor_middleware(
     State(state): State<AppState>,
@@ -49,7 +107,7 @@ pub async fn monitor_middleware(
                     );
                 }
                 request_body_str = if let Ok(s) = std::str::from_utf8(&bytes) {
-                    Some(s.to_string())
+                    Some(redact_sensitive_data(s))
                 } else {
                     Some("[Binary Request Data]".to_string())
                 };
@@ -241,9 +299,9 @@ pub async fn monitor_middleware(
                 
                 if consolidated.is_empty() {
                     // Fallback: store raw SSE data if parsing failed
-                    log.response_body = Some(full_response.to_string());
+                    log.response_body = Some(redact_sensitive_data(full_response));
                 } else {
-                    log.response_body = Some(serde_json::to_string_pretty(&Value::Object(consolidated)).unwrap_or_else(|_| full_response.to_string()));
+                    log.response_body = Some(serde_json::to_string_pretty(&Value::Object(consolidated)).unwrap_or_else(|_| redact_sensitive_data(full_response)));
                 }
             } else {
                 log.response_body = Some(format!("[Binary Stream Data: {} bytes]", all_stream_data.len()));
@@ -312,7 +370,7 @@ pub async fn monitor_middleware(
                             }
                         }
                     }
-                    log.response_body = Some(s.to_string());
+                    log.response_body = Some(redact_sensitive_data(s));
                 } else {
                     log.response_body = Some("[Binary Response Data]".to_string());
                 }
@@ -333,5 +391,44 @@ pub async fn monitor_middleware(
         log.response_body = Some(format!("[{}]", content_type));
         monitor.log_request(log).await;
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_redact_sensitive_data_json() {
+        let input = r#"{
+            "api_key": "sk-123456",
+            "model": "gpt-4",
+            "messages": [],
+            "inner": {
+                "token": "secret-token",
+                "other": "value"
+            }
+        }"#;
+
+        let redacted = redact_sensitive_data(input);
+        assert!(redacted.contains(r#""api_key": "[REDACTED]""#));
+        assert!(redacted.contains(r#""token": "[REDACTED]""#));
+        assert!(redacted.contains(r#""model": "gpt-4""#));
+        assert!(redacted.contains(r#""other": "value""#));
+    }
+
+    #[test]
+    fn test_redact_sensitive_data_string() {
+        let input = r#"Some text with "api_key": "sk-123456" inside."#;
+        let redacted = redact_sensitive_data(input);
+        assert!(redacted.contains(r#""api_key": "[REDACTED]""#));
+    }
+
+    #[test]
+    fn test_redact_sensitive_keys_case_insensitive() {
+        let input = r#"{ "API_KEY": "sk-123", "Secret": "abc" }"#;
+        let redacted = redact_sensitive_data(input);
+        assert!(redacted.contains(r#""API_KEY": "[REDACTED]""#));
+        assert!(redacted.contains(r#""Secret": "[REDACTED]""#));
     }
 }
