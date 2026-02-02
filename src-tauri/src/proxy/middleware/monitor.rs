@@ -49,7 +49,7 @@ pub async fn monitor_middleware(
                     );
                 }
                 request_body_str = if let Ok(s) = std::str::from_utf8(&bytes) {
-                    Some(s.to_string())
+                    Some(redact_sensitive_data(s))
                 } else {
                     Some("[Binary Request Data]".to_string())
                 };
@@ -241,9 +241,9 @@ pub async fn monitor_middleware(
                 
                 if consolidated.is_empty() {
                     // Fallback: store raw SSE data if parsing failed
-                    log.response_body = Some(full_response.to_string());
+                    log.response_body = Some(redact_sensitive_data(full_response));
                 } else {
-                    log.response_body = Some(serde_json::to_string_pretty(&Value::Object(consolidated)).unwrap_or_else(|_| full_response.to_string()));
+                    log.response_body = Some(serde_json::to_string_pretty(&Value::Object(consolidated)).unwrap_or_else(|_| redact_sensitive_data(full_response)));
                 }
             } else {
                 log.response_body = Some(format!("[Binary Stream Data: {} bytes]", all_stream_data.len()));
@@ -312,7 +312,7 @@ pub async fn monitor_middleware(
                             }
                         }
                     }
-                    log.response_body = Some(s.to_string());
+                    log.response_body = Some(redact_sensitive_data(s));
                 } else {
                     log.response_body = Some("[Binary Response Data]".to_string());
                 }
@@ -333,5 +333,108 @@ pub async fn monitor_middleware(
         log.response_body = Some(format!("[{}]", content_type));
         monitor.log_request(log).await;
         response
+    }
+}
+
+fn redact_sensitive_data(body: &str) -> String {
+    // Attempt to parse as JSON
+    if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(body) {
+        redact_json_value(&mut json);
+        return serde_json::to_string_pretty(&json).unwrap_or_else(|_| body.to_string());
+    }
+    // If not JSON, return original
+    body.to_string()
+}
+
+fn redact_json_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                if is_sensitive_key(k) {
+                    *v = serde_json::Value::String("[REDACTED]".to_string());
+                } else {
+                    redact_json_value(v);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                redact_json_value(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let lower = key.to_lowercase();
+    lower.contains("api_key") ||
+    lower.contains("apikey") ||
+    lower.contains("secret") ||
+    (lower.contains("token") && !lower.contains("tokens")) ||
+    lower.contains("password") ||
+    lower == "authorization" ||
+    lower == "access_token" ||
+    lower == "refresh_token" ||
+    lower == "auth_token" ||
+    lower == "id_token"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_redaction_simple() {
+        let json = r#"
+        {
+            "model": "gpt-4",
+            "api_key": "sk-123456"
+        }
+        "#;
+        let redacted = redact_sensitive_data(json);
+        assert!(redacted.contains("[REDACTED]"));
+        assert!(!redacted.contains("sk-123456"));
+    }
+
+    #[test]
+    fn test_redaction_nested() {
+        let json = r#"
+        {
+            "model": "gpt-4",
+            "metadata": {
+                "user_token": "secret_token",
+                "public_id": "123"
+            }
+        }
+        "#;
+        let redacted = redact_sensitive_data(json);
+        assert!(redacted.contains("[REDACTED]"));
+        assert!(!redacted.contains("secret_token"));
+        assert!(redacted.contains("gpt-4"));
+        assert!(redacted.contains("123"));
+    }
+
+    #[test]
+    fn test_redaction_array() {
+        let json = r#"
+        {
+            "items": [
+                {"key": "val1"},
+                {"token": "secret2"}
+            ]
+        }
+        "#;
+        let redacted = redact_sensitive_data(json);
+        assert!(redacted.contains("[REDACTED]"));
+        assert!(!redacted.contains("secret2"));
+        assert!(redacted.contains("val1"));
+    }
+
+    #[test]
+    fn test_non_json_passthrough() {
+        let text = "This is just text with api_key = 123";
+        let redacted = redact_sensitive_data(text);
+        assert_eq!(redacted, text);
     }
 }
