@@ -15,6 +15,7 @@ import { useAccountStore } from './stores/useAccountStore';
 import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import logger from './utils/logger';
 
 const router = createBrowserRouter([
   {
@@ -72,7 +73,7 @@ function App() {
     // 监听托盘切换账号事件
     unlistenPromises.push(
       listen('tray://account-switched', () => {
-        console.log('[App] Tray account switched, refreshing...');
+        logger.log('[App] Tray account switched, refreshing...');
         fetchCurrentAccount();
         fetchAccounts();
       })
@@ -81,7 +82,7 @@ function App() {
     // 监听托盘刷新事件
     unlistenPromises.push(
       listen('tray://refresh-current', () => {
-        console.log('[App] Tray refresh triggered, refreshing...');
+        logger.log('[App] Tray refresh triggered, refreshing...');
         fetchCurrentAccount();
         fetchAccounts();
       })
@@ -102,16 +103,16 @@ function App() {
   useEffect(() => {
     const checkUpdates = async () => {
       try {
-        console.log('[App] Checking if we should check for updates...');
+        logger.log('[App] Checking if we should check for updates...');
         const shouldCheck = await invoke<boolean>('should_check_updates');
-        console.log('[App] Should check updates:', shouldCheck);
+        logger.log('[App] Should check updates:', shouldCheck);
 
         if (shouldCheck) {
           setShowUpdateNotification(true);
           // 我们这里只负责显示通知组件，通知组件内部会去调用 check_for_updates
           // 我们在显示组件后，标记已经检查过了（即便失败或无更新，组件内部也会处理）
           await invoke('update_last_check_time');
-          console.log('[App] Update check cycle initiated and last check time updated.');
+          logger.log('[App] Update check cycle initiated and last check time updated.');
         }
       } catch (error) {
         console.error('Failed to check update settings:', error);
