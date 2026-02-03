@@ -3,6 +3,7 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tokio::time::{self, Duration};
+use tokio::fs;
 use tauri::Manager;
 use crate::modules::{config, logger, quota, account};
 use crate::models::Account;
@@ -28,18 +29,23 @@ fn load_warmup_history() -> HashMap<String, i64> {
     }
 }
 
-fn save_warmup_history(history: &HashMap<String, i64>) {
+
+async fn save_warmup_history_async(json_content: String) {
     if let Ok(path) = get_warmup_history_path() {
-        if let Ok(content) = serde_json::to_string_pretty(history) {
-            let _ = std::fs::write(&path, content);
-        }
+        let _ = fs::write(&path, json_content).await;
     }
 }
 
-pub fn record_warmup_history(key: &str, timestamp: i64) {
-    let mut history = WARMUP_HISTORY.lock().unwrap();
-    history.insert(key.to_string(), timestamp);
-    save_warmup_history(&history);
+pub async fn record_warmup_history(key: &str, timestamp: i64) {
+    let content = {
+        let mut history = WARMUP_HISTORY.lock().unwrap();
+        history.insert(key.to_string(), timestamp);
+        serde_json::to_string_pretty(&*history).ok()
+    };
+
+    if let Some(c) = content {
+        save_warmup_history_async(c).await;
+    }
 }
 
 pub fn check_cooldown(key: &str, cooldown_seconds: i64) -> bool {
@@ -150,9 +156,17 @@ pub fn start_scheduler(app_handle: tauri::AppHandle) {
                         let model_to_ping = model.name.clone();
                         let history_key = format!("{}:{}:100", account.email, model_to_ping);
                         
-                        let mut history = WARMUP_HISTORY.lock().unwrap();
-                        if history.remove(&history_key).is_some() {
-                            save_warmup_history(&history);
+                        let content = {
+                            let mut history = WARMUP_HISTORY.lock().unwrap();
+                            if history.remove(&history_key).is_some() {
+                                serde_json::to_string_pretty(&*history).ok()
+                            } else {
+                                None
+                            }
+                        };
+
+                        if let Some(c) = content {
+                            save_warmup_history_async(c).await;
                             logger::log_info(&format!(
                                 "[Scheduler] Cleared history for {} @ {} (quota: {}%)",
                                 model_to_ping, account.email, model.percentage
@@ -210,7 +224,7 @@ pub fn start_scheduler(app_handle: tauri::AppHandle) {
                             match handle.await {
                                 Ok((true, history_key)) => {
                                     success += 1;
-                                    record_warmup_history(&history_key, now_ts);
+                                    record_warmup_history(&history_key, now_ts).await;
                                 }
                                 _ => {}
                             }
@@ -281,7 +295,7 @@ pub async fn trigger_warmup_for_account(account: &Account) {
         
         if model.percentage == 100 {
             // Check history to avoid repeated warmup (with cooldown)
-            {
+            let save_content = {
                 let mut history = WARMUP_HISTORY.lock().unwrap();
                 
                 // 4 hour cooldown (Pro account resets every 5h, 1h margin)
@@ -289,12 +303,21 @@ pub async fn trigger_warmup_for_account(account: &Account) {
                     let cooldown_seconds = 14400;
                     if now_ts - last_warmup_ts < cooldown_seconds {
                         // Still in cooldown, skip
-                        continue;
+                        None
+                    } else {
+                        history.insert(history_key, now_ts);
+                        serde_json::to_string_pretty(&*history).ok()
                     }
+                } else {
+                    history.insert(history_key, now_ts);
+                    serde_json::to_string_pretty(&*history).ok()
                 }
-                
-                history.insert(history_key, now_ts);
-                save_warmup_history(&history);
+            };
+
+            if let Some(content) = save_content {
+                save_warmup_history_async(content).await;
+            } else {
+                continue;
             }
 
             let model_to_ping = model.name.clone();
