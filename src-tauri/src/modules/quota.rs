@@ -430,7 +430,7 @@ pub async fn warm_up_all_accounts() -> Result<String, String> {
                             Ok((true, email, model)) => {
                                 success += 1;
                                 let history_key = format!("{}:{}:100", email, model);
-                                crate::modules::scheduler::record_warmup_history(&history_key, now_ts);
+                                crate::modules::scheduler::record_warmup_history(&history_key, now_ts).await;
                             }
                             _ => {}
                         }
@@ -500,7 +500,7 @@ pub async fn warm_up_account(account_id: &str) -> Result<String, String> {
             if warmup_model_directly(&token, &name, &pid, &email, pct).await {
                 let history_key = format!("{}:{}:100", email, name);
                 let now_ts = chrono::Utc::now().timestamp();
-                crate::modules::scheduler::record_warmup_history(&history_key, now_ts);
+                crate::modules::scheduler::record_warmup_history(&history_key, now_ts).await;
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
